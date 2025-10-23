@@ -1,31 +1,50 @@
 name: Deploy to Minikube using GitHub Actions
 
 on: [push]
-  
+
 jobs:
-  job1:
+  deploy:
     runs-on: ubuntu-latest
-    name: build Node.js Docker Image and deploy to minikube
+    name: Build Node.js Docker image and deploy to Minikube
     steps:
-    - uses: actions/checkout@v2
-    - name: Start minikube
-      uses: medyagh/setup-minikube@master
-    - name: Try the cluster !
-      run: kubectl get pods -A
-    - name: Build image
-      run: |
-          export SHELL=/bin/bash
+      - name: Checkout repository
+        uses: actions/checkout@v3
+
+      - name: Start Minikube
+        uses: medyagh/setup-minikube@v1
+
+      - name: Inspect cluster
+        run: kubectl get pods -A
+
+      - name: Build image
+        env:
+          IMAGE_NAME: devopshint/node-app
+          IMAGE_TAG: ${{ github.sha }}
+        run: |
           eval $(minikube -p minikube docker-env)
-          docker build -f ./Dockerfile -t devopshint/node-app:latest .
-          echo -n "verifying images:"
-          docker images         
-    - name: Deploy to minikube
-      run:
-        kubectl apply -f k8s-node-app.yaml
-    - name: Wait for deployment rollout
-      run: |
-          kubectl rollout status deployment/nodejs-app --timeout=120s
-    - name: Test service URLs
-      run: |
+          docker build -f Dockerfile -t ${IMAGE_NAME}:${IMAGE_TAG} .
+          echo "Verifying image:"
+          docker images ${IMAGE_NAME}
+
+      - name: Deploy to Minikube
+        env:
+          IMAGE_TAG: ${{ github.sha }}
+        run: |
+          sed "s/IMAGE_TAG/${IMAGE_TAG}/g" k8s-node-app.yaml | kubectl apply -f -
+          kubectl rollout status deployment/nodejs-app
+
+      - name: Test service URLs
+        run: |
           minikube service list
-          minikube service nodejs-app --url
+          SERVICE_URL=$(minikube service nodejs-app --url | head -n 1)
+          echo "Testing ${SERVICE_URL}"
+          for attempt in {1..30}; do
+            if curl -fsS "${SERVICE_URL}"; then
+              echo "Service is reachable"
+              exit 0
+            fi
+            echo "Waiting for service (attempt ${attempt})"
+            sleep 2
+          done
+          echo "Service did not become ready in time" >&2
+          exit 1
